@@ -1,0 +1,19 @@
+[package]
+name = "xicon"
+description = "Start x11 program with custom icon"
+authors = ["zang.loo"]
+version = "0.1.0"
+homepage = "https://github.com/zangloo/xicon"
+repository = "https://github.com/zangloo/xicon.git"
+keywords = ["x11", "icon"]
+license = "GPL-2.0-only"
+readme = "README.md"
+categories = ["command-line-utilities"]
+edition = "2021"
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.4", features = ["derive"] }
+x11rb = "0.12"
+image = "0.24"
+fork = "0.1"
