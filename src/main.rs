@@ -59,6 +59,7 @@ fn start(command: &str, args: &Vec<String>, wait: u64, icon: &PathBuf) -> Result
 		std::thread::sleep(Duration::from_secs(1));
 		if let Some(win) = window_with_pid(&conn, pid_property, icon_property, screen.root, pid as u32)? {
 			set_icon(&conn, win, icon_property, icon)?;
+			break;
 		}
 	}
 	Ok(())
