@@ -10,7 +10,7 @@ cargo build --release
 
 ## Usage
 
-xicon --icon path-to-icon --command command <command and args>
+xicon --icon path-to-icon --command command <command args>
 
 ## License
 
