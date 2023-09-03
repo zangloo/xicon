@@ -55,11 +55,22 @@ fn start(command: &str, args: &Vec<String>, wait: u64, icon: &PathBuf) -> Result
 		.expect("Failed create icon property atom")
 		.atom;
 
-	for _ in 0..wait {
-		std::thread::sleep(Duration::from_secs(1));
+	std::thread::sleep(Duration::from_millis(100));
+	let mut i = 0;
+	if let Some(win) = loop {
 		if let Some(win) = window_with_pid(&conn, pid_property, icon_property, screen.root, pid as u32)? {
-			set_icon(&conn, win, icon_property, icon)?;
-			break;
+			break Some(win);
+		}
+		std::thread::sleep(Duration::from_millis(500));
+		i += 1;
+		if i >= wait * 2 {
+			break None;
+		}
+	} {
+		let (icon_data, icon_data_len) = load_icon(icon)?;
+		for _ in i..wait * 2 {
+			set_icon(&conn, win, icon_property, &icon_data, icon_data_len)?;
+			std::thread::sleep(Duration::from_millis(500));
 		}
 	}
 	Ok(())
@@ -117,9 +128,9 @@ fn push_u32(data: &mut Vec<u8>, value: u32)
 	}
 }
 
-fn set_icon(conn: &RustConnection, win: Window, icon_property: Atom, icon_path: &PathBuf) -> Result<()>
+fn load_icon(icon: &PathBuf) -> Result<(Vec<u8>, u32)>
 {
-	let data = fs::read(icon_path)?;
+	let data = fs::read(icon)?;
 	let image = image::load_from_memory(&data)?;
 	let width = image.width();
 	let height = image.height();
@@ -141,15 +152,21 @@ fn set_icon(conn: &RustConnection, win: Window, icon_property: Atom, icon_path: 
 		}
 	}
 	let length = width * height + 2;
+	Ok((data, length))
+}
 
+#[inline]
+fn set_icon(conn: &RustConnection, win: Window, icon_property: Atom,
+	icon_data: &[u8], icon_data_len: u32) -> Result<()>
+{
 	conn.change_property(
 		PropMode::REPLACE,
 		win,
 		icon_property,
 		Atom::from(6u8),
 		32,
-		length,
-		&data,
+		icon_data_len,
+		&icon_data,
 	)?;
 	Ok(())
 }
