@@ -7,7 +7,7 @@ use anyhow::Result;
 use clap::Parser;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
-use x11rb::protocol::xproto::{Atom, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt, EventMask, PropMode, Window};
+use x11rb::protocol::xproto::{Atom, AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt, EventMask, PropMode, Window};
 use x11rb::rust_connection::RustConnection;
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -25,6 +25,8 @@ struct Cli {
 	size: Option<WindowSize>,
 	#[clap(short, long, help = "window always on top")]
 	above: bool,
+	#[clap(short = 'd', long, help = "window without decoration")]
+	no_decoration: bool,
 	#[clap(short, long, default_value = "10", help = "max seconds to wait for program to complete startup")]
 	wait: u64,
 	#[clap(short, long, help = "x11 program")]
@@ -41,7 +43,15 @@ fn main() -> Result<()>
 		}
 	}
 
-	start(&cli.command, &cli.args, cli.wait, &cli.icon, &cli.size, cli.above)
+	start(
+		&cli.command,
+		&cli.args,
+		cli.wait,
+		&cli.icon,
+		&cli.size,
+		cli.above,
+		cli.no_decoration,
+	)
 }
 
 struct IconData {
@@ -58,12 +68,13 @@ struct PropertyAtoms {
 	change_state: Atom,
 	iconic: Atom,
 	above: Atom,
+	decoration: Atom,
 }
 
 #[inline]
 fn start(command: &str, args: &Vec<String>, wait: u64,
-	icon_path: &Option<PathBuf>, size: &Option<WindowSize>, above: bool)
-	-> Result<()>
+	icon_path: &Option<PathBuf>, size: &Option<WindowSize>, above: bool,
+	no_decoration: bool) -> Result<()>
 {
 	let (conn, screen_num) = x11rb::connect(None)?;
 	let screen = &conn.setup().roots[screen_num];
@@ -95,7 +106,11 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 		iconic: Atom::from(3u8),    // IconicState
 		above: conn.intern_atom(true, &Cow::Borrowed("_NET_WM_STATE_ABOVE".as_bytes()))?
 			.reply()
-			.expect("Failed create min property atom")
+			.expect("Failed create above property atom")
+			.atom,
+		decoration: conn.intern_atom(true, &Cow::Borrowed("_MOTIF_WM_HINTS".as_bytes()))?
+			.reply()
+			.expect("Failed create type dock property atom")
 			.atom,
 	};
 
@@ -125,6 +140,9 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 						if above {
 							set_above(&conn, screen.root, win, &properties)?;
 						}
+						if no_decoration {
+							remove_decoration(&conn, win, &properties)?
+						}
 						break;
 					}
 				}
@@ -149,7 +167,7 @@ fn get_pid(conn: &RustConnection, current: Window, properties: &PropertyAtoms)
 		false,
 		current,
 		properties.pid,
-		Atom::from(6u8),
+		AtomEnum::CARDINAL,
 		0, 1,
 	)?;
 	let pid_reply = pid_result.reply()?;
@@ -208,7 +226,7 @@ fn set_icon(conn: &RustConnection, win: Window, properties: &PropertyAtoms,
 		PropMode::REPLACE,
 		win,
 		properties.set_icon,
-		Atom::from(6u8),
+		AtomEnum::CARDINAL,
 		32,
 		icon.length,
 		&icon.data,
@@ -232,6 +250,7 @@ fn send_message(conn: &RustConnection, root: Window, win: Window,
 	Ok(())
 }
 
+#[inline]
 fn set_size(conn: &RustConnection, root: Window, win: Window,
 	size: &WindowSize, properties: &PropertyAtoms)
 	-> Result<()>
@@ -256,6 +275,7 @@ fn set_size(conn: &RustConnection, root: Window, win: Window,
 	Ok(())
 }
 
+#[inline]
 fn set_above(conn: &RustConnection, root: Window, win: Window, properties: &PropertyAtoms)
 	-> Result<()>
 {
@@ -264,5 +284,31 @@ fn set_above(conn: &RustConnection, root: Window, win: Window, properties: &Prop
 		properties.above,
 		0, 0, 0,
 	])?;
+	Ok(())
+}
+
+#[inline]
+fn remove_decoration(conn: &RustConnection, win: Window, properties: &PropertyAtoms)
+	-> Result<()>
+{
+	const PROP_MOTIF_WM_HINTS_ELEMENTS: u32 = 5;
+	const MWM_HINTS_DECORATIONS: u32 = 1 << 1;
+
+	let mut data = vec![];
+	push_u32(&mut data, MWM_HINTS_DECORATIONS);
+	push_u32(&mut data, 0);
+	push_u32(&mut data, 0);
+	push_u32(&mut data, 0);
+	push_u32(&mut data, 0);
+
+	conn.change_property(
+		PropMode::REPLACE,
+		win,
+		properties.decoration,
+		properties.decoration,
+		32,
+		PROP_MOTIF_WM_HINTS_ELEMENTS,
+		&data,
+	)?.check()?;
 	Ok(())
 }
