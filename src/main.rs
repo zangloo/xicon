@@ -7,7 +7,7 @@ use anyhow::Result;
 use clap::Parser;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
-use x11rb::protocol::xproto::{Atom, ChangeWindowAttributesAux, ClientMessageData, ClientMessageEvent, ConnectionExt, EventMask, PropMode, Window};
+use x11rb::protocol::xproto::{Atom, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt, EventMask, PropMode, Window};
 use x11rb::rust_connection::RustConnection;
 
 #[derive(clap::ValueEnum, Clone, Debug)]
