@@ -16,4 +16,3 @@ anyhow = "1.0"
 clap = { version = "4.4", features = ["derive"] }
 x11rb = "0.12"
 image = "0.24"
-fork = "0.1"

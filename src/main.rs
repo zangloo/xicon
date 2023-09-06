@@ -2,12 +2,12 @@ use std::borrow::Cow;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::Duration;
-use anyhow::{anyhow, Result};
+use std::time::SystemTime;
+use anyhow::Result;
 use clap::Parser;
-use fork::Fork;
 use x11rb::connection::Connection;
-use x11rb::protocol::xproto::{Atom, ClientMessageData, ClientMessageEvent, ConnectionExt, EventMask, PropMode, Window};
+use x11rb::protocol::Event;
+use x11rb::protocol::xproto::{Atom, ChangeWindowAttributesAux, ClientMessageData, ClientMessageEvent, ConnectionExt, EventMask, PropMode, Window};
 use x11rb::rust_connection::RustConnection;
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -39,17 +39,7 @@ fn main() -> Result<()>
 		}
 	}
 
-	match fork::daemon(false, true) {
-		Ok(Fork::Parent(_)) => Ok(()),
-		Ok(Fork::Child) => start(
-			&cli.command,
-			&cli.args,
-			cli.wait,
-			&cli.icon,
-			&cli.size),
-		Err(_) => Err(anyhow!("Failed fork")),
-	}
-	// start(&cli.command, &cli.args, cli.wait, &cli.icon)
+	start(&cli.command, &cli.args, cli.wait, &cli.icon, &cli.size)
 }
 
 struct IconData {
@@ -57,7 +47,7 @@ struct IconData {
 	length: u32,
 }
 
-struct PropertieAtoms {
+struct PropertyAtoms {
 	pid: Atom,
 	set_icon: Atom,
 	state: Atom,
@@ -71,13 +61,9 @@ struct PropertieAtoms {
 fn start(command: &str, args: &Vec<String>, wait: u64,
 	icon_path: &Option<PathBuf>, size: &Option<WindowSize>) -> Result<()>
 {
-	let child = Command::new(command)
-		.args(args)
-		.spawn()?;
-	let pid = child.id();
 	let (conn, screen_num) = x11rb::connect(None)?;
 	let screen = &conn.setup().roots[screen_num];
-	let properties = PropertieAtoms {
+	let properties = PropertyAtoms {
 		pid: conn.intern_atom(true, &Cow::Borrowed("_NET_WM_PID".as_bytes()))?
 			.reply()
 			.expect("Failed create pid property atom")
@@ -105,38 +91,48 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 		iconic: Atom::from(3u8),    // IconicState
 	};
 
-	std::thread::sleep(Duration::from_millis(100));
-	let mut i = 0;
-	if let Some(win) = loop {
-		if let Some(win) = window_with_pid(&conn, &properties, screen.root, pid)? {
-			break Some(win);
-		}
-		std::thread::sleep(Duration::from_millis(500));
-		i += 1;
-		if i >= wait * 2 {
-			break None;
-		}
-	} {
-		let icon = if let Some(icon_path) = icon_path {
-			Some(load_icon(icon_path)?)
-		} else {
-			None
-		};
-		for _ in i..wait * 2 {
-			if let Some(icon) = &icon {
-				set_icon(&conn, win, &properties, &icon)?;
+	let mut aux = ChangeWindowAttributesAux::new();
+	aux.event_mask = Some(EventMask::SUBSTRUCTURE_NOTIFY);
+	conn.change_window_attributes(screen.root, &aux)?.check()?;
+	conn.flush()?;
+	let child = Command::new(command)
+		.args(args)
+		.spawn()?;
+	let pid = child.id();
+	let start = SystemTime::now();
+	loop {
+		let event = conn.wait_for_event()?;
+		match event {
+			Event::ReparentNotify(event) => {
+				let win = event.window;
+				if let Some(win_pid) = get_pid(&conn, event.window, &properties)? {
+					if win_pid == pid {
+						if let Some(icon) = icon_path {
+							let icon = load_icon(icon)?;
+							set_icon(&conn, win, &properties, &icon)?;
+						}
+						if let Some(size) = &size {
+							set_size(&conn, screen.root, win, &size, &properties)?;
+						}
+						break;
+					}
+				}
 			}
-			if let Some(size) = &size {
-				set_size(&conn, screen.root, win, &size, &properties)?;
-			}
-			std::thread::sleep(Duration::from_millis(500));
+			_ => {}
+		}
+		let now = SystemTime::now();
+		let duration = now.duration_since(start)
+			.expect("Clock may have gone backwards");
+		if duration.as_secs() > wait {
+			eprintln!("Failed to detect command windows in {wait} seconds, quit.");
+			break;
 		}
 	}
 	Ok(())
 }
 
-fn window_with_pid(conn: &RustConnection, properties: &PropertieAtoms,
-	current: Window, pid: u32) -> Result<Option<Window>>
+fn get_pid(conn: &RustConnection, current: Window, properties: &PropertyAtoms)
+	-> Result<Option<u32>>
 {
 	let pid_result = conn.get_property(
 		false,
@@ -147,35 +143,14 @@ fn window_with_pid(conn: &RustConnection, properties: &PropertieAtoms,
 	)?;
 	let pid_reply = pid_result.reply()?;
 	if pid_reply.length == 1 {
-		let win_pid = pid_reply.value32()
+		let pid = pid_reply.value32()
 			.expect("Invalid replay")
 			.next()
 			.expect("No pid exists in result");
-		if win_pid == pid {
-			let icon_reply = conn.get_property(false,
-				current,
-				properties.set_icon,
-				Atom::from(6u8),
-				0, 1,
-			)?.reply()?;
-			// the window with icon
-			if icon_reply.length == 1 {
-				if icon_reply.value32()
-					.expect("Invalid icon replay")
-					.next()
-					.is_some() {
-					return Ok(Some(current));
-				}
-			}
-		}
+		Ok(Some(pid))
+	} else {
+		Ok(None)
 	}
-	let tree_result = conn.query_tree(current)?;
-	for win in tree_result.reply()?.children {
-		if let Some(win) = window_with_pid(conn, &properties, win, pid)? {
-			return Ok(Some(win));
-		}
-	}
-	Ok(None)
 }
 
 #[inline]
@@ -215,7 +190,7 @@ fn load_icon(icon: &PathBuf) -> Result<IconData>
 }
 
 #[inline]
-fn set_icon(conn: &RustConnection, win: Window, properties: &PropertieAtoms,
+fn set_icon(conn: &RustConnection, win: Window, properties: &PropertyAtoms,
 	icon: &IconData) -> Result<()>
 {
 	conn.change_property(
@@ -231,7 +206,7 @@ fn set_icon(conn: &RustConnection, win: Window, properties: &PropertieAtoms,
 }
 
 fn set_size(conn: &RustConnection, root: Window, win: Window,
-	size: &WindowSize, properties: &PropertieAtoms)
+	size: &WindowSize, properties: &PropertyAtoms)
 	-> Result<()>
 {
 	match size {
