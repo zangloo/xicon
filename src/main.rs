@@ -23,6 +23,8 @@ struct Cli {
 	icon: Option<PathBuf>,
 	#[clap(short, long, help = "window size max/min", value_enum)]
 	size: Option<WindowSize>,
+	#[clap(short, long, help = "window always on top")]
+	above: bool,
 	#[clap(short, long, default_value = "10", help = "max seconds to wait for program to complete startup")]
 	wait: u64,
 	#[clap(short, long, help = "x11 program")]
@@ -39,7 +41,7 @@ fn main() -> Result<()>
 		}
 	}
 
-	start(&cli.command, &cli.args, cli.wait, &cli.icon, &cli.size)
+	start(&cli.command, &cli.args, cli.wait, &cli.icon, &cli.size, cli.above)
 }
 
 struct IconData {
@@ -55,11 +57,13 @@ struct PropertyAtoms {
 	horizontal: Atom,
 	change_state: Atom,
 	iconic: Atom,
+	above: Atom,
 }
 
 #[inline]
 fn start(command: &str, args: &Vec<String>, wait: u64,
-	icon_path: &Option<PathBuf>, size: &Option<WindowSize>) -> Result<()>
+	icon_path: &Option<PathBuf>, size: &Option<WindowSize>, above: bool)
+	-> Result<()>
 {
 	let (conn, screen_num) = x11rb::connect(None)?;
 	let screen = &conn.setup().roots[screen_num];
@@ -89,6 +93,10 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 			.expect("Failed create min property atom")
 			.atom,
 		iconic: Atom::from(3u8),    // IconicState
+		above: conn.intern_atom(true, &Cow::Borrowed("_NET_WM_STATE_ABOVE".as_bytes()))?
+			.reply()
+			.expect("Failed create min property atom")
+			.atom,
 	};
 
 	let mut aux = ChangeWindowAttributesAux::new();
@@ -113,6 +121,9 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 						}
 						if let Some(size) = &size {
 							set_size(&conn, screen.root, win, &size, &properties)?;
+						}
+						if above {
+							set_above(&conn, screen.root, win, &properties)?;
 						}
 						break;
 					}
@@ -205,49 +216,53 @@ fn set_icon(conn: &RustConnection, win: Window, properties: &PropertyAtoms,
 	Ok(())
 }
 
+#[inline]
+fn send_message(conn: &RustConnection, root: Window, win: Window,
+	msg_type: Atom, data: [u32; 5]) -> Result<()>
+{
+	let event = ClientMessageEvent::new(
+		32, win, msg_type, data);
+
+	conn.send_event(
+		true,
+		root,
+		EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
+		event,
+	)?.check()?;
+	Ok(())
+}
+
 fn set_size(conn: &RustConnection, root: Window, win: Window,
 	size: &WindowSize, properties: &PropertyAtoms)
 	-> Result<()>
 {
 	match size {
 		WindowSize::Max => {
-			let data = ClientMessageData::from(
-				[
-					1,              // _NET_WM_STATE_ADD
-					properties.vertical,
-					properties.horizontal,
-					1,              // application ??
-					0,
-				]
-			);
-			let event = ClientMessageEvent::new(
-				32, win, properties.state, data);
-
-			conn.send_event(
-				true,
-				root,
-				EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-				event,
-			)?.check()?;
+			send_message(conn, root, win, properties.state, [
+				1,              // _NET_WM_STATE_ADD
+				properties.vertical,
+				properties.horizontal,
+				1,              // application ??
+				0,
+			])?;
 		}
 		WindowSize::Min => {
-			let data = ClientMessageData::from(
-				[
-					properties.iconic,
-					0, 0, 0, 0,
-				]
-			);
-			let event = ClientMessageEvent::new(
-				32, win, properties.change_state, data);
-
-			conn.send_event(
-				true,
-				root,
-				EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY,
-				event,
-			)?.check()?;
+			send_message(conn, root, win, properties.change_state, [
+				properties.iconic,
+				0, 0, 0, 0,
+			])?;
 		}
 	}
 	Ok(())
 }
 
+fn set_above(conn: &RustConnection, root: Window, win: Window, properties: &PropertyAtoms)
+	-> Result<()>
+{
+	send_message(conn, root, win, properties.state, [
+		1,
+		properties.above,
+		0, 0, 0,
+	])?;
+	Ok(())
+}
