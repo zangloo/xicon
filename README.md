@@ -12,7 +12,7 @@ cargo build --release
 
 ## Usage
 
-xicon [--icon path-to-icon] [--maximal | --minimal] [--above] --command command [command args]
+xicon [--icon path-to-icon] [--size <max | min>] [--above] [--no-decoration] --command command [command args]
 
 ## License
 
