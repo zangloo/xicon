@@ -56,19 +56,19 @@ impl WindowType {
 struct Cli {
 	#[clap(short, long, help = "icon file")]
 	icon: Option<PathBuf>,
-	#[clap(short, long, help = "window size max/min", value_enum)]
+	#[clap(short, long, value_enum)]
 	size: Option<WindowSize>,
-	#[clap(short, long, help = "window always on top")]
+	#[clap(short, long, help = "always on top")]
 	above: bool,
-	#[clap(short = 'd', long, help = "window without decoration")]
+	#[clap(short = 'd', long, help = "no decoration")]
 	no_decoration: bool,
-	#[clap(short = 't', long = "type", help = "window type")]
+	#[clap(short = 't', long = "type")]
 	win_type: Option<WindowType>,
-	#[clap(short, long, help = "window geometry, format: [<width>{xX}<height>][{+-}<xoffset>{+-}<yoffset>]", allow_hyphen_values = true)]
+	#[clap(short, long, help = "format: [<width>{xX}<height>][{+-}<xoffset>{+-}<yoffset>]", allow_hyphen_values = true)]
 	geometry: Option<String>,
 	#[clap(short, long, default_value = "10", help = "max seconds to wait for program to complete startup")]
 	wait: u64,
-	#[clap(short, long, help = "x11 program")]
+	#[clap(short, long, help = "x11 program to run")]
 	command: String,
 	args: Vec<String>,
 }
