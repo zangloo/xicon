@@ -64,7 +64,7 @@ struct Cli {
 	no_decoration: bool,
 	#[clap(short = 't', long = "type", help = "window type")]
 	win_type: Option<WindowType>,
-	#[clap(short, long, help = "window geometry, for geometry like '-100+100'", env = "XICON_GEOMETRY")]
+	#[clap(short, long, help = "window geometry, format: [<width>{xX}<height>][{+-}<xoffset>{+-}<yoffset>]", allow_hyphen_values = true)]
 	geometry: Option<String>,
 	#[clap(short, long, default_value = "10", help = "max seconds to wait for program to complete startup")]
 	wait: u64,
