@@ -14,6 +14,7 @@ use x11rb::rust_connection::RustConnection;
 enum WindowSize {
 	Max,
 	Min,
+	Fullscreen,
 }
 
 #[derive(Parser, Debug)]
@@ -63,8 +64,6 @@ struct PropertyAtoms {
 	pid: Atom,
 	set_icon: Atom,
 	state: Atom,
-	vertical: Atom,
-	horizontal: Atom,
 	change_state: Atom,
 	above: Atom,
 }
@@ -80,8 +79,6 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 		pid: get_atom(&conn, "_NET_WM_PID")?,
 		set_icon: get_atom(&conn, "_NET_WM_ICON")?,
 		state: get_atom(&conn, "_NET_WM_STATE")?,
-		vertical: get_atom(&conn, "_NET_WM_STATE_MAXIMIZED_VERT")?,
-		horizontal: get_atom(&conn, "_NET_WM_STATE_MAXIMIZED_HORZ")?,
 		change_state: get_atom(&conn, "WM_CHANGE_STATE")?,
 		above: get_atom(&conn, "_NET_WM_STATE_ABOVE")?,
 	};
@@ -113,7 +110,7 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 							set_above(&conn, screen.root, win, &properties)?;
 						}
 						if no_decoration {
-							remove_decoration(&conn, win)?
+							remove_decoration(&conn, win)?;
 						}
 						break;
 					}
@@ -202,7 +199,7 @@ fn set_icon(conn: &RustConnection, win: Window, properties: &PropertyAtoms,
 		32,
 		icon.length,
 		&icon.data,
-	)?;
+	)?.check()?;
 	Ok(())
 }
 
@@ -227,12 +224,15 @@ fn set_size(conn: &RustConnection, root: Window, win: Window,
 	size: &WindowSize, properties: &PropertyAtoms)
 	-> Result<()>
 {
+	const _NET_WM_STATE_ADD: u32 = 1;
 	match size {
 		WindowSize::Max => {
+			let vertical = get_atom(&conn, "_NET_WM_STATE_MAXIMIZED_VERT")?;
+			let horizontal = get_atom(&conn, "_NET_WM_STATE_MAXIMIZED_HORZ")?;
 			send_message(conn, root, win, properties.state, [
-				1,              // _NET_WM_STATE_ADD
-				properties.vertical,
-				properties.horizontal,
+				_NET_WM_STATE_ADD,
+				vertical,
+				horizontal,
 				1,              // application ??
 				0,
 			])?;
@@ -241,6 +241,14 @@ fn set_size(conn: &RustConnection, root: Window, win: Window,
 			send_message(conn, root, win, properties.change_state, [
 				3,              // IconicState
 				0, 0, 0, 0,
+			])?;
+		}
+		WindowSize::Fullscreen => {
+			let fs = get_atom(&conn, "_NET_WM_STATE_FULLSCREEN")?;
+			send_message(conn, root, win, properties.state, [
+				_NET_WM_STATE_ADD,
+				fs,
+				0, 0, 0,
 			])?;
 		}
 	}
