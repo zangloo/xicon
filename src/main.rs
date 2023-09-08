@@ -5,9 +5,10 @@ use std::process::Command;
 use std::time::SystemTime;
 use anyhow::Result;
 use clap::Parser;
+use regex::Regex;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
-use x11rb::protocol::xproto::{Atom, AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConnectionExt, EventMask, PropMode, Window};
+use x11rb::protocol::xproto::{Atom, AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux, ConnectionExt, EventMask, PropMode, Screen, Window};
 use x11rb::rust_connection::RustConnection;
 
 #[derive(clap::ValueEnum, Clone, Debug)]
@@ -27,6 +28,11 @@ enum WindowType {
 	Splash,
 	Dialog,
 	Normal,
+}
+
+struct WindowGeometry {
+	size: Option<(u32, u32)>,
+	offset: Option<(bool, i32, bool, i32)>,
 }
 
 impl WindowType {
@@ -58,6 +64,8 @@ struct Cli {
 	no_decoration: bool,
 	#[clap(short = 't', long = "type", help = "window type")]
 	win_type: Option<WindowType>,
+	#[clap(short, long, help = "window geometry, for geometry like '-100+100'", env = "XICON_GEOMETRY")]
+	geometry: Option<String>,
 	#[clap(short, long, default_value = "10", help = "max seconds to wait for program to complete startup")]
 	wait: u64,
 	#[clap(short, long, help = "x11 program")]
@@ -74,16 +82,7 @@ fn main() -> Result<()>
 		}
 	}
 
-	start(
-		&cli.command,
-		&cli.args,
-		cli.wait,
-		&cli.icon,
-		&cli.size,
-		cli.above,
-		cli.no_decoration,
-		&cli.win_type,
-	)
+	start(cli)
 }
 
 struct IconData {
@@ -100,9 +99,7 @@ struct PropertyAtoms {
 }
 
 #[inline]
-fn start(command: &str, args: &Vec<String>, wait: u64,
-	icon_path: &Option<PathBuf>, size: &Option<WindowSize>, above: bool,
-	no_decoration: bool, win_type: &Option<WindowType>) -> Result<()>
+fn start(cli: Cli) -> Result<()>
 {
 	let (conn, screen_num) = x11rb::connect(None)?;
 	let screen = &conn.setup().roots[screen_num];
@@ -118,9 +115,7 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 	aux.event_mask = Some(EventMask::SUBSTRUCTURE_NOTIFY);
 	conn.change_window_attributes(screen.root, &aux)?.check()?;
 	conn.flush()?;
-	let child = Command::new(command)
-		.args(args)
-		.spawn()?;
+	let child = Command::new(cli.command).args(cli.args).spawn()?;
 	let pid = child.id();
 	let start = SystemTime::now();
 	loop {
@@ -130,21 +125,24 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 				let win = event.window;
 				if let Some(win_pid) = get_pid(&conn, event.window, &properties)? {
 					if win_pid == pid {
-						if let Some(icon) = icon_path {
+						if let Some(icon) = &cli.icon {
 							let icon = load_icon(icon)?;
 							set_icon(&conn, win, &properties, &icon)?;
 						}
-						if let Some(size) = &size {
+						if let Some(size) = &cli.size {
 							set_size(&conn, screen.root, win, &size, &properties)?;
 						}
-						if above {
+						if cli.above {
 							set_above(&conn, screen.root, win, &properties)?;
 						}
-						if no_decoration {
+						if cli.no_decoration {
 							remove_decoration(&conn, win)?;
 						}
-						if let Some(win_type) = win_type {
+						if let Some(win_type) = &cli.win_type {
 							set_type(&conn, win, win_type)?;
+						}
+						if let Some(geometry) = &cli.geometry {
+							set_geometry(&conn, &screen, win, geometry)?;
 						}
 						break;
 					}
@@ -155,8 +153,8 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 		let now = SystemTime::now();
 		let duration = now.duration_since(start)
 			.expect("Clock may have gone backwards");
-		if duration.as_secs() > wait {
-			eprintln!("Failed to detect command windows in {wait} seconds, quit.");
+		if duration.as_secs() > cli.wait {
+			eprintln!("Failed to detect command windows in {} seconds, quit.", cli.wait);
 			break;
 		}
 	}
@@ -347,10 +345,103 @@ fn set_type(conn: &RustConnection, win: Window, win_type: &WindowType) -> Result
 }
 
 #[inline]
+fn parse_geometry(geometry: &str) -> Result<WindowGeometry>
+{
+	let re = Regex::new(r"^((\d+)[xX](\d+))?(([+-])(\d+)([+-])(\d+))?$").unwrap();
+	let captures = re.captures(geometry)
+		.expect(&format!("Invalid geometry string: {geometry}"));
+	let mut geometry = WindowGeometry {
+		offset: None,
+		size: None,
+	};
+	if let (Some(w), Some(h)) = (captures.get(2), captures.get(3)) {
+		let w: u32 = w.as_str().parse()?;
+		let h: u32 = h.as_str().parse()?;
+		geometry.size = Some((w, h));
+	}
+	if let (Some(xs), Some(x), Some(ys), Some(y)) = (captures.get(5), captures.get(6), captures.get(7), captures.get(8)) {
+		let x: i32 = x.as_str().parse()?;
+		let xs = xs.as_str() == "-";
+		let y: i32 = y.as_str().parse()?;
+		let ys = ys.as_str() == "-";
+		geometry.offset = Some((xs, x, ys, y));
+	}
+	Ok(geometry)
+}
+
+#[inline]
+fn set_geometry(conn: &RustConnection, screen: &Screen, win: Window, geometry: &str) -> Result<()>
+{
+	let geometry = parse_geometry(geometry)?;
+	let mut aux = ConfigureWindowAux::new();
+	if let Some(size) = geometry.size {
+		aux = aux.width(size.0).height(size.1);
+	}
+	if let Some(offset) = geometry.offset {
+		let xs = offset.0;
+		let mut x = offset.1;
+		let ys = offset.2;
+		let mut y = offset.3;
+		let mut orig_win_size = None;
+		if xs {
+			let width = if let Some(size) = geometry.size {
+				size.0 as i32
+			} else {
+				let size = conn.get_geometry(win)?
+					.reply()?;
+				let ow = size.width;
+				let oh = size.height;
+				orig_win_size = Some((ow, oh));
+				ow as i32
+			};
+			x = screen.width_in_pixels as i32 - x - width;
+		}
+		if ys {
+			let height = if let Some(size) = geometry.size {
+				size.1 as i32
+			} else {
+				if let Some((_, oh)) = orig_win_size {
+					oh as i32
+				} else {
+					conn.get_geometry(win)?
+						.reply()?.height as i32
+				}
+			};
+			y = screen.height_in_pixels as i32 - y - height;
+		}
+		aux = aux.x(x).y(y);
+	}
+	conn.configure_window(win, &aux)?.check()?;
+	Ok(())
+}
+
+#[inline]
 fn get_atom(conn: &RustConnection, atom_name: &str) -> Result<Atom>
 {
 	Ok(conn.intern_atom(true, &Cow::Borrowed(atom_name.as_bytes()))?
 		.reply()
 		.expect(&format!("Failed create atom: {atom_name}"))
 		.atom)
+}
+
+#[cfg(test)]
+mod test {
+	use crate::parse_geometry;
+
+	#[test]
+	fn test_parse_geometry()
+	{
+		let g = parse_geometry("200x200+100-100").unwrap();
+		assert_eq!(g.size.unwrap(), (200, 200));
+		assert_eq!(g.offset.unwrap(), (false, 100, true, 100));
+		let g = parse_geometry("200x200").unwrap();
+		assert_eq!(g.size.unwrap(), (200, 200));
+		assert!(g.offset.is_none());
+		let g = parse_geometry("+100-100").unwrap();
+		assert!(g.size.is_none());
+		assert_eq!(g.offset.unwrap(), (false, 100, true, 100));
+		let g = parse_geometry("-100-100").unwrap();
+		assert!(g.size.is_none());
+		assert_eq!(g.offset.unwrap(), (true, 100, true, 100));
+	}
 }
