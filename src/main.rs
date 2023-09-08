@@ -66,9 +66,7 @@ struct PropertyAtoms {
 	vertical: Atom,
 	horizontal: Atom,
 	change_state: Atom,
-	iconic: Atom,
 	above: Atom,
-	decoration: Atom,
 }
 
 #[inline]
@@ -79,39 +77,13 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 	let (conn, screen_num) = x11rb::connect(None)?;
 	let screen = &conn.setup().roots[screen_num];
 	let properties = PropertyAtoms {
-		pid: conn.intern_atom(true, &Cow::Borrowed("_NET_WM_PID".as_bytes()))?
-			.reply()
-			.expect("Failed create pid property atom")
-			.atom,
-		set_icon: conn.intern_atom(true, &Cow::Borrowed("_NET_WM_ICON".as_bytes()))?
-			.reply()
-			.expect("Failed create icon property atom")
-			.atom,
-		state: conn.intern_atom(true, &Cow::Borrowed("_NET_WM_STATE".as_bytes()))?
-			.reply()
-			.expect("Failed create state property atom")
-			.atom,
-		vertical: conn.intern_atom(true, &Cow::Borrowed("_NET_WM_STATE_MAXIMIZED_VERT".as_bytes()))?
-			.reply()
-			.expect("Failed create vert property atom")
-			.atom,
-		horizontal: conn.intern_atom(true, &Cow::Borrowed("_NET_WM_STATE_MAXIMIZED_HORZ".as_bytes()))?
-			.reply()
-			.expect("Failed create hor property atom")
-			.atom,
-		change_state: conn.intern_atom(true, &Cow::Borrowed("WM_CHANGE_STATE".as_bytes()))?
-			.reply()
-			.expect("Failed create min property atom")
-			.atom,
-		iconic: Atom::from(3u8),    // IconicState
-		above: conn.intern_atom(true, &Cow::Borrowed("_NET_WM_STATE_ABOVE".as_bytes()))?
-			.reply()
-			.expect("Failed create above property atom")
-			.atom,
-		decoration: conn.intern_atom(true, &Cow::Borrowed("_MOTIF_WM_HINTS".as_bytes()))?
-			.reply()
-			.expect("Failed create type dock property atom")
-			.atom,
+		pid: get_atom(&conn, "_NET_WM_PID")?,
+		set_icon: get_atom(&conn, "_NET_WM_ICON")?,
+		state: get_atom(&conn, "_NET_WM_STATE")?,
+		vertical: get_atom(&conn, "_NET_WM_STATE_MAXIMIZED_VERT")?,
+		horizontal: get_atom(&conn, "_NET_WM_STATE_MAXIMIZED_HORZ")?,
+		change_state: get_atom(&conn, "WM_CHANGE_STATE")?,
+		above: get_atom(&conn, "_NET_WM_STATE_ABOVE")?,
 	};
 
 	let mut aux = ChangeWindowAttributesAux::new();
@@ -141,7 +113,7 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 							set_above(&conn, screen.root, win, &properties)?;
 						}
 						if no_decoration {
-							remove_decoration(&conn, win, &properties)?
+							remove_decoration(&conn, win)?
 						}
 						break;
 					}
@@ -267,7 +239,7 @@ fn set_size(conn: &RustConnection, root: Window, win: Window,
 		}
 		WindowSize::Min => {
 			send_message(conn, root, win, properties.change_state, [
-				properties.iconic,
+				3,              // IconicState
 				0, 0, 0, 0,
 			])?;
 		}
@@ -288,12 +260,12 @@ fn set_above(conn: &RustConnection, root: Window, win: Window, properties: &Prop
 }
 
 #[inline]
-fn remove_decoration(conn: &RustConnection, win: Window, properties: &PropertyAtoms)
-	-> Result<()>
+fn remove_decoration(conn: &RustConnection, win: Window) -> Result<()>
 {
 	const PROP_MOTIF_WM_HINTS_ELEMENTS: u32 = 5;
 	const MWM_HINTS_DECORATIONS: u32 = 1 << 1;
 
+	let decoration_property = get_atom(conn, "_MOTIF_WM_HINTS")?;
 	let mut data = vec![];
 	push_u32(&mut data, MWM_HINTS_DECORATIONS);
 	push_u32(&mut data, 0);
@@ -304,11 +276,20 @@ fn remove_decoration(conn: &RustConnection, win: Window, properties: &PropertyAt
 	conn.change_property(
 		PropMode::REPLACE,
 		win,
-		properties.decoration,
-		properties.decoration,
+		decoration_property,
+		decoration_property,
 		32,
 		PROP_MOTIF_WM_HINTS_ELEMENTS,
 		&data,
 	)?.check()?;
 	Ok(())
+}
+
+#[inline]
+fn get_atom(conn: &RustConnection, atom_name: &str) -> Result<Atom>
+{
+	Ok(conn.intern_atom(true, &Cow::Borrowed(atom_name.as_bytes()))?
+		.reply()
+		.expect(&format!("Failed create atom: {atom_name}"))
+		.atom)
 }
