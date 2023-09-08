@@ -17,6 +17,34 @@ enum WindowSize {
 	Fullscreen,
 }
 
+#[derive(clap::ValueEnum, Clone, Debug)]
+enum WindowType {
+	Desktop,
+	Dock,
+	Toolbar,
+	Menu,
+	Utility,
+	Splash,
+	Dialog,
+	Normal,
+}
+
+impl WindowType {
+	fn as_str(&self) -> &'static str
+	{
+		match self {
+			WindowType::Desktop => "_NET_WM_WINDOW_TYPE_DESKTOP",
+			WindowType::Dock => "_NET_WM_WINDOW_TYPE_DOCK",
+			WindowType::Toolbar => "_NET_WM_WINDOW_TYPE_TOOLBAR",
+			WindowType::Menu => "_NET_WM_WINDOW_TYPE_MENU",
+			WindowType::Utility => "_NET_WM_WINDOW_TYPE_UTILITY",
+			WindowType::Splash => "_NET_WM_WINDOW_TYPE_SPLASH",
+			WindowType::Dialog => "_NET_WM_WINDOW_TYPE_DIALOG",
+			WindowType::Normal => "_NET_WM_WINDOW_TYPE_NORMAL",
+		}
+	}
+}
+
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Cli {
@@ -28,6 +56,8 @@ struct Cli {
 	above: bool,
 	#[clap(short = 'd', long, help = "window without decoration")]
 	no_decoration: bool,
+	#[clap(short = 't', long = "type", help = "window type")]
+	win_type: Option<WindowType>,
 	#[clap(short, long, default_value = "10", help = "max seconds to wait for program to complete startup")]
 	wait: u64,
 	#[clap(short, long, help = "x11 program")]
@@ -52,6 +82,7 @@ fn main() -> Result<()>
 		&cli.size,
 		cli.above,
 		cli.no_decoration,
+		&cli.win_type,
 	)
 }
 
@@ -71,7 +102,7 @@ struct PropertyAtoms {
 #[inline]
 fn start(command: &str, args: &Vec<String>, wait: u64,
 	icon_path: &Option<PathBuf>, size: &Option<WindowSize>, above: bool,
-	no_decoration: bool) -> Result<()>
+	no_decoration: bool, win_type: &Option<WindowType>) -> Result<()>
 {
 	let (conn, screen_num) = x11rb::connect(None)?;
 	let screen = &conn.setup().roots[screen_num];
@@ -111,6 +142,9 @@ fn start(command: &str, args: &Vec<String>, wait: u64,
 						}
 						if no_decoration {
 							remove_decoration(&conn, win)?;
+						}
+						if let Some(win_type) = win_type {
+							set_type(&conn, win, win_type)?;
 						}
 						break;
 					}
@@ -288,6 +322,25 @@ fn remove_decoration(conn: &RustConnection, win: Window) -> Result<()>
 		decoration_property,
 		32,
 		PROP_MOTIF_WM_HINTS_ELEMENTS,
+		&data,
+	)?.check()?;
+	Ok(())
+}
+
+#[inline]
+fn set_type(conn: &RustConnection, win: Window, win_type: &WindowType) -> Result<()>
+{
+	let win_type_prop = get_atom(conn, "_NET_WM_WINDOW_TYPE")?;
+	let win_type_value = get_atom(conn, win_type.as_str())?;
+	let mut data = vec![];
+	push_u32(&mut data, win_type_value);
+	conn.change_property(
+		PropMode::REPLACE,
+		win,
+		win_type_prop,
+		AtomEnum::ATOM,
+		32,
+		1,
 		&data,
 	)?.check()?;
 	Ok(())
