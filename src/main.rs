@@ -120,35 +120,32 @@ fn start(cli: Cli) -> Result<()>
 	let start = SystemTime::now();
 	loop {
 		let event = conn.wait_for_event()?;
-		match event {
-			Event::ReparentNotify(event) => {
-				let win = event.window;
-				if let Some(win_pid) = get_pid(&conn, event.window, &properties)? {
-					if win_pid == pid {
-						if let Some(icon) = &cli.icon {
-							let icon = load_icon(icon)?;
-							set_icon(&conn, win, &properties, &icon)?;
-						}
-						if let Some(size) = &cli.size {
-							set_size(&conn, screen.root, win, &size, &properties)?;
-						}
-						if cli.above {
-							set_above(&conn, screen.root, win, &properties)?;
-						}
-						if cli.no_decoration {
-							remove_decoration(&conn, win)?;
-						}
-						if let Some(win_type) = &cli.win_type {
-							set_type(&conn, win, win_type)?;
-						}
-						if let Some(geometry) = &cli.geometry {
-							set_geometry(&conn, &screen, win, geometry)?;
-						}
-						break;
+		if let Event::ReparentNotify(event) = event {
+			let win = event.window;
+			if let Some(win_pid) = get_pid(&conn, event.window, &properties)? {
+				if win_pid == pid {
+					if let Some(icon) = &cli.icon {
+						let icon = load_icon(icon)?;
+						set_icon(&conn, win, &properties, &icon)?;
 					}
+					if let Some(size) = &cli.size {
+						set_size(&conn, screen.root, win, size, &properties)?;
+					}
+					if cli.above {
+						set_above(&conn, screen.root, win, &properties)?;
+					}
+					if cli.no_decoration {
+						remove_decoration(&conn, win)?;
+					}
+					if let Some(win_type) = &cli.win_type {
+						set_type(&conn, win, win_type)?;
+					}
+					if let Some(geometry) = &cli.geometry {
+						set_geometry(&conn, screen, win, geometry)?;
+					}
+					break;
 				}
 			}
-			_ => {}
 		}
 		let now = SystemTime::now();
 		let duration = now.duration_since(start)
@@ -203,17 +200,12 @@ fn load_icon(icon: &PathBuf) -> Result<IconData>
 	push_u32(&mut data, width);
 	push_u32(&mut data, height);
 	let mut slice = bytes.as_slice();
-	loop {
-		match slice {
-			[r, g, b, a, rest @ ..] => {
-				data.push(*b);
-				data.push(*g);
-				data.push(*r);
-				data.push(*a);
-				slice = rest;
-			}
-			_ => break,
-		}
+	while let [r, g, b, a, rest @ ..] = slice {
+		data.push(*b);
+		data.push(*g);
+		data.push(*r);
+		data.push(*a);
+		slice = rest;
 	}
 	let length = width * height + 2;
 	Ok(IconData { data, length })
@@ -259,8 +251,8 @@ fn set_size(conn: &RustConnection, root: Window, win: Window,
 	const _NET_WM_STATE_ADD: u32 = 1;
 	match size {
 		WindowSize::Max => {
-			let vertical = get_atom(&conn, "_NET_WM_STATE_MAXIMIZED_VERT")?;
-			let horizontal = get_atom(&conn, "_NET_WM_STATE_MAXIMIZED_HORZ")?;
+			let vertical = get_atom(conn, "_NET_WM_STATE_MAXIMIZED_VERT")?;
+			let horizontal = get_atom(conn, "_NET_WM_STATE_MAXIMIZED_HORZ")?;
 			send_message(conn, root, win, properties.state, [
 				_NET_WM_STATE_ADD,
 				vertical,
@@ -276,7 +268,7 @@ fn set_size(conn: &RustConnection, root: Window, win: Window,
 			])?;
 		}
 		WindowSize::Fullscreen => {
-			let fs = get_atom(&conn, "_NET_WM_STATE_FULLSCREEN")?;
+			let fs = get_atom(conn, "_NET_WM_STATE_FULLSCREEN")?;
 			send_message(conn, root, win, properties.state, [
 				_NET_WM_STATE_ADD,
 				fs,
@@ -349,7 +341,7 @@ fn parse_geometry(geometry: &str) -> Result<WindowGeometry>
 {
 	let re = Regex::new(r"^((\d+)[xX](\d+))?(([+-])(\d+)([+-])(\d+))?$").unwrap();
 	let captures = re.captures(geometry)
-		.expect(&format!("Invalid geometry string: {geometry}"));
+		.unwrap_or_else(|| panic!("Invalid geometry string: {geometry}"));
 	let mut geometry = WindowGeometry {
 		offset: None,
 		size: None,
@@ -399,14 +391,12 @@ fn set_geometry(conn: &RustConnection, screen: &Screen, win: Window, geometry: &
 		if ys {
 			let height = if let Some(size) = geometry.size {
 				size.1 as i32
-			} else {
-				if let Some((_, oh)) = orig_win_size {
-					oh as i32
-				} else {
-					conn.get_geometry(win)?
-						.reply()?.height as i32
-				}
-			};
+			} else if let Some((_, oh)) = orig_win_size {
+   					oh as i32
+   				} else {
+   					conn.get_geometry(win)?
+   						.reply()?.height as i32
+   				};
 			y = screen.height_in_pixels as i32 - y - height;
 		}
 		aux = aux.x(x).y(y);
@@ -420,7 +410,7 @@ fn get_atom(conn: &RustConnection, atom_name: &str) -> Result<Atom>
 {
 	Ok(conn.intern_atom(true, &Cow::Borrowed(atom_name.as_bytes()))?
 		.reply()
-		.expect(&format!("Failed create atom: {atom_name}"))
+		.unwrap_or_else(|_| panic!("Failed create atom: {atom_name}"))
 		.atom)
 }
 
