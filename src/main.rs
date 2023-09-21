@@ -327,18 +327,17 @@ fn set_size(conn: &RustConnection, root: Window, win: Window,
 		WindowSize::Max => {
 			let vertical = get_atom(conn, "_NET_WM_STATE_MAXIMIZED_VERT")?;
 			let horizontal = get_atom(conn, "_NET_WM_STATE_MAXIMIZED_HORZ")?;
-			add_state(conn, root, win, state_atom, vertical, horizontal, 0, 0)?;
+			add_state(conn, root, win, state_atom, vertical, horizontal, 0, 0)
 		}
 		WindowSize::Min => {
 			let atom = get_atom(conn, "_NET_WM_STATE_HIDDEN")?;
-			add_state(conn, root, win, state_atom, atom, 0, 0, 0)?;
+			add_state(conn, root, win, state_atom, atom, 0, 0, 0)
 		}
 		WindowSize::Fullscreen => {
 			let fs = get_atom(conn, "_NET_WM_STATE_FULLSCREEN")?;
-			add_state(conn, root, win, state_atom, fs, 0, 0, 0)?;
+			add_state(conn, root, win, state_atom, fs, 0, 0, 0)
 		}
 	}
-	Ok(())
 }
 
 #[inline]
