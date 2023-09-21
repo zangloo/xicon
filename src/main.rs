@@ -12,8 +12,6 @@ use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{Atom, AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux, ConnectionExt, EventMask, PropMode, Screen, Window};
 use x11rb::rust_connection::RustConnection;
 
-const _NET_WM_STATE_ADD: u32 = 1;
-
 #[derive(Clone, Debug)]
 enum WindowMatchProperty {
 	Class(String),
@@ -126,26 +124,12 @@ struct IconData {
 	length: u32,
 }
 
-struct PropertyAtoms {
-	pid: Atom,
-	set_icon: Atom,
-	state: Atom,
-	change_state: Atom,
-	above: Atom,
-}
-
 #[inline]
 fn start(cli: Cli) -> Result<()>
 {
 	let (conn, screen_num) = x11rb::connect(None)?;
 	let screen = &conn.setup().roots[screen_num];
-	let properties = PropertyAtoms {
-		pid: get_atom(&conn, "_NET_WM_PID")?,
-		set_icon: get_atom(&conn, "_NET_WM_ICON")?,
-		state: get_atom(&conn, "_NET_WM_STATE")?,
-		change_state: get_atom(&conn, "WM_CHANGE_STATE")?,
-		above: get_atom(&conn, "_NET_WM_STATE_ABOVE")?,
-	};
+	let state_atom = get_atom(&conn, "_NET_WM_STATE")?;
 
 	let mut aux = ChangeWindowAttributesAux::new();
 	aux.event_mask = Some(EventMask::SUBSTRUCTURE_NOTIFY);
@@ -158,16 +142,16 @@ fn start(cli: Cli) -> Result<()>
 		let event = conn.wait_for_event()?;
 		if let Event::ReparentNotify(event) = event {
 			let win = event.window;
-			if match_window(&conn, win, pid, &cli.property, &properties)? {
+			if match_window(&conn, win, pid, &cli.property)? {
 				if let Some(icon) = &cli.icon {
 					let icon = load_icon(icon)?;
-					set_icon(&conn, win, &properties, &icon)?;
+					set_icon(&conn, win, &icon)?;
 				}
 				if let Some(size) = &cli.size {
-					set_size(&conn, screen.root, win, size, &properties)?;
+					set_size(&conn, screen.root, win, size, state_atom)?;
 				}
 				if cli.above {
-					set_above(&conn, screen.root, win, &properties)?;
+					set_above(&conn, screen.root, win, state_atom)?;
 				}
 				if cli.no_decoration {
 					remove_decoration(&conn, win)?;
@@ -179,7 +163,7 @@ fn start(cli: Cli) -> Result<()>
 					set_geometry(&conn, screen, win, geometry)?;
 				}
 				if cli.no_taskbar_icon {
-					hide_taskbar_icon(&conn, screen.root, win, &properties)?;
+					hide_taskbar_icon(&conn, screen.root, win, state_atom)?;
 				}
 				break;
 			}
@@ -196,15 +180,15 @@ fn start(cli: Cli) -> Result<()>
 }
 
 fn match_window(conn: &RustConnection, current: Window, target_pid: u32,
-	match_property: &Option<WindowMatchProperty>, properties: &PropertyAtoms)
-	-> Result<bool>
+	match_property: &Option<WindowMatchProperty>) -> Result<bool>
 {
 	match match_property {
 		None => {
+			let pid_atom = get_atom(&conn, "_NET_WM_PID")?;
 			let pid_result = conn.get_property(
 				false,
 				current,
-				properties.pid,
+				pid_atom,
 				AtomEnum::CARDINAL,
 				0, 1,
 			)?;
@@ -304,13 +288,13 @@ fn load_icon(icon: &PathBuf) -> Result<IconData>
 }
 
 #[inline]
-fn set_icon(conn: &RustConnection, win: Window, properties: &PropertyAtoms,
-	icon: &IconData) -> Result<()>
+fn set_icon(conn: &RustConnection, win: Window, icon: &IconData) -> Result<()>
 {
+	let set_icon_atom = get_atom(&conn, "_NET_WM_ICON")?;
 	conn.change_property(
 		PropMode::REPLACE,
 		win,
-		properties.set_icon,
+		set_icon_atom,
 		AtomEnum::CARDINAL,
 		32,
 		icon.length,
@@ -337,49 +321,32 @@ fn send_message(conn: &RustConnection, root: Window, win: Window,
 
 #[inline]
 fn set_size(conn: &RustConnection, root: Window, win: Window,
-	size: &WindowSize, properties: &PropertyAtoms)
-	-> Result<()>
+	size: &WindowSize, state_atom: Atom) -> Result<()>
 {
 	match size {
 		WindowSize::Max => {
 			let vertical = get_atom(conn, "_NET_WM_STATE_MAXIMIZED_VERT")?;
 			let horizontal = get_atom(conn, "_NET_WM_STATE_MAXIMIZED_HORZ")?;
-			send_message(conn, root, win, properties.state, [
-				_NET_WM_STATE_ADD,
-				vertical,
-				horizontal,
-				1,              // application ??
-				0,
-			])?;
+			add_state(conn, root, win, state_atom, vertical, horizontal, 1, 0)?;
 		}
 		WindowSize::Min => {
-			send_message(conn, root, win, properties.change_state, [
-				3,              // IconicState
-				0, 0, 0, 0,
-			])?;
+			let atom = get_atom(conn, "_NET_WM_STATE_HIDDEN")?;
+			add_state(conn, root, win, state_atom, atom, 0, 0, 0)?;
 		}
 		WindowSize::Fullscreen => {
 			let fs = get_atom(conn, "_NET_WM_STATE_FULLSCREEN")?;
-			send_message(conn, root, win, properties.state, [
-				_NET_WM_STATE_ADD,
-				fs,
-				0, 0, 0,
-			])?;
+			add_state(conn, root, win, state_atom, fs, 0, 0, 0)?;
 		}
 	}
 	Ok(())
 }
 
 #[inline]
-fn set_above(conn: &RustConnection, root: Window, win: Window, properties: &PropertyAtoms)
+fn set_above(conn: &RustConnection, root: Window, win: Window, state_atom: Atom)
 	-> Result<()>
 {
-	send_message(conn, root, win, properties.state, [
-		1,
-		properties.above,
-		0, 0, 0,
-	])?;
-	Ok(())
+	let atom = get_atom(conn, "_NET_WM_STATE_ABOVE")?;
+	add_state(conn, root, win, state_atom, atom, 0, 0, 0)
 }
 
 #[inline]
@@ -496,14 +463,22 @@ fn set_geometry(conn: &RustConnection, screen: &Screen, win: Window, geometry: &
 	Ok(())
 }
 
+#[inline]
 fn hide_taskbar_icon(conn: &RustConnection, root: Window, win: Window,
-	properties: &PropertyAtoms) -> Result<()>
+	state_atom: Atom) -> Result<()>
 {
 	let atom = get_atom(conn, "_NET_WM_STATE_SKIP_TASKBAR")?;
-	send_message(conn, root, win, properties.state, [
+	add_state(conn, root, win, state_atom, atom, 0, 0, 0)
+}
+
+#[inline]
+fn add_state(conn: &RustConnection, root: Window, win: Window, state_atom: Atom,
+	v1: u32, v2: u32, v3: u32, v4: u32) -> Result<()>
+{
+	const _NET_WM_STATE_ADD: u32 = 1;
+	send_message(conn, root, win, state_atom, [
 		_NET_WM_STATE_ADD,
-		atom,
-		0, 0, 0,
+		v1, v2, v3, v4
 	])?;
 	Ok(())
 }
