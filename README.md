@@ -38,7 +38,7 @@ Options:
 
 start xclock at right top without decoration and above all other windows
 ```
-LC_ALL=zh_CN.UTF-8 xicon -d -a -g 150x30-250+0 -p name=xclock -c xclock -- -d -update 1 -strftime '%H:%M:%S %m/%d (%a)' -bg black -fg white
+LC_ALL=zh_CN.UTF-8 xicon -d -k -a -g 150x30-250+0 -p name=xclock -c xclock -- -d -update 1 -strftime '%H:%M:%S %m/%d (%a)' -bg black -fg white
 ```
 
 start rxvt max and no decoration
