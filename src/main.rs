@@ -12,6 +12,8 @@ use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{Atom, AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux, ConnectionExt, EventMask, PropMode, Screen, Window};
 use x11rb::rust_connection::RustConnection;
 
+const _NET_WM_STATE_ADD: u32 = 1;
+
 #[derive(Clone, Debug)]
 enum WindowMatchProperty {
 	Class(String),
@@ -93,6 +95,8 @@ struct Cli {
 	win_type: Option<WindowType>,
 	#[clap(short, long, help = "format: [<width>{xX}<height>][{+-}<xoffset>{+-}<yoffset>]", allow_hyphen_values = true)]
 	geometry: Option<String>,
+	#[clap(short = 'k', long, help = "hide window in taskbar")]
+	no_taskbar_icon: bool,
 	#[clap(short, long, default_value = "10", help = "max seconds to wait for program to complete startup")]
 	wait: u64,
 	#[clap(short, long, help = "x11 program to run")]
@@ -173,6 +177,9 @@ fn start(cli: Cli) -> Result<()>
 				}
 				if let Some(geometry) = &cli.geometry {
 					set_geometry(&conn, screen, win, geometry)?;
+				}
+				if cli.no_taskbar_icon {
+					hide_taskbar_icon(&conn, screen.root, win, &properties)?;
 				}
 				break;
 			}
@@ -333,7 +340,6 @@ fn set_size(conn: &RustConnection, root: Window, win: Window,
 	size: &WindowSize, properties: &PropertyAtoms)
 	-> Result<()>
 {
-	const _NET_WM_STATE_ADD: u32 = 1;
 	match size {
 		WindowSize::Max => {
 			let vertical = get_atom(conn, "_NET_WM_STATE_MAXIMIZED_VERT")?;
@@ -487,6 +493,18 @@ fn set_geometry(conn: &RustConnection, screen: &Screen, win: Window, geometry: &
 		aux = aux.x(x).y(y);
 	}
 	conn.configure_window(win, &aux)?.check()?;
+	Ok(())
+}
+
+fn hide_taskbar_icon(conn: &RustConnection, root: Window, win: Window,
+	properties: &PropertyAtoms) -> Result<()>
+{
+	let atom = get_atom(conn, "_NET_WM_STATE_SKIP_TASKBAR")?;
+	send_message(conn, root, win, properties.state, [
+		_NET_WM_STATE_ADD,
+		atom,
+		0, 0, 0,
+	])?;
 	Ok(())
 }
 
