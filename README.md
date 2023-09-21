@@ -26,6 +26,7 @@ Options:
   -d, --no-decoration        no decoration
   -t, --type <WIN_TYPE>      [possible values: desktop, dock, toolbar, menu, utility, splash, dialog, normal]
   -g, --geometry <GEOMETRY>  format: [<width>{xX}<height>][{+-}<xoffset>{+-}<yoffset>]
+  -k, --no-taskbar-icon      hide window in taskbar
   -w, --wait <WAIT>          max seconds to wait for program to complete startup [default: 10]
   -c, --command <COMMAND>    x11 program to run
   -h, --help                 Print help
