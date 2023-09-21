@@ -327,7 +327,7 @@ fn set_size(conn: &RustConnection, root: Window, win: Window,
 		WindowSize::Max => {
 			let vertical = get_atom(conn, "_NET_WM_STATE_MAXIMIZED_VERT")?;
 			let horizontal = get_atom(conn, "_NET_WM_STATE_MAXIMIZED_HORZ")?;
-			add_state(conn, root, win, state_atom, vertical, horizontal, 1, 0)?;
+			add_state(conn, root, win, state_atom, vertical, horizontal, 0, 0)?;
 		}
 		WindowSize::Min => {
 			let atom = get_atom(conn, "_NET_WM_STATE_HIDDEN")?;
