@@ -3,13 +3,38 @@ use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::SystemTime;
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use clap::Parser;
+use fork::Fork;
 use regex::Regex;
 use x11rb::connection::Connection;
 use x11rb::protocol::Event;
 use x11rb::protocol::xproto::{Atom, AtomEnum, ChangeWindowAttributesAux, ClientMessageEvent, ConfigureWindowAux, ConnectionExt, EventMask, PropMode, Screen, Window};
 use x11rb::rust_connection::RustConnection;
+
+#[derive(Clone, Debug)]
+enum WindowMatchProperty {
+	Class(String),
+	Name(String),
+}
+
+impl<'a> From<&'a str> for WindowMatchProperty {
+	fn from(value: &'a str) -> Self
+	{
+		let re = Regex::new(r"^((class)|(name))=(.+)$").unwrap();
+		let captures = re.captures(value)
+			.unwrap_or_else(|| panic!("Invalid match property: {value}"));
+		if let (Some(type_), Some(name)) = (captures.get(1), captures.get(4)) {
+			if type_.as_str() == "class" {
+				WindowMatchProperty::Class(name.as_str().to_owned())
+			} else {
+				WindowMatchProperty::Name(name.as_str().to_owned())
+			}
+		} else {
+			panic!("Invalid match property: {value}")
+		}
+	}
+}
 
 #[derive(clap::ValueEnum, Clone, Debug)]
 enum WindowSize {
@@ -54,6 +79,8 @@ impl WindowType {
 #[derive(Parser, Debug)]
 #[clap(author, version, about, long_about = None)]
 struct Cli {
+	#[clap(short, long, help = "window match property, <class|name>=<property value>")]
+	property: Option<WindowMatchProperty>,
 	#[clap(short, long, help = "icon file")]
 	icon: Option<PathBuf>,
 	#[clap(short, long, value_enum)]
@@ -82,7 +109,12 @@ fn main() -> Result<()>
 		}
 	}
 
-	start(cli)
+	match fork::daemon(false, true) {
+		Ok(Fork::Parent(_)) => Ok(()),
+		Ok(Fork::Child) => start(cli),
+		Err(_) => Err(anyhow!("Failed fork")),
+	}
+	// start(cli)
 }
 
 struct IconData {
@@ -122,29 +154,27 @@ fn start(cli: Cli) -> Result<()>
 		let event = conn.wait_for_event()?;
 		if let Event::ReparentNotify(event) = event {
 			let win = event.window;
-			if let Some(win_pid) = get_pid(&conn, event.window, &properties)? {
-				if win_pid == pid {
-					if let Some(icon) = &cli.icon {
-						let icon = load_icon(icon)?;
-						set_icon(&conn, win, &properties, &icon)?;
-					}
-					if let Some(size) = &cli.size {
-						set_size(&conn, screen.root, win, size, &properties)?;
-					}
-					if cli.above {
-						set_above(&conn, screen.root, win, &properties)?;
-					}
-					if cli.no_decoration {
-						remove_decoration(&conn, win)?;
-					}
-					if let Some(win_type) = &cli.win_type {
-						set_type(&conn, win, win_type)?;
-					}
-					if let Some(geometry) = &cli.geometry {
-						set_geometry(&conn, screen, win, geometry)?;
-					}
-					break;
+			if match_window(&conn, win, pid, &cli.property, &properties)? {
+				if let Some(icon) = &cli.icon {
+					let icon = load_icon(icon)?;
+					set_icon(&conn, win, &properties, &icon)?;
 				}
+				if let Some(size) = &cli.size {
+					set_size(&conn, screen.root, win, size, &properties)?;
+				}
+				if cli.above {
+					set_above(&conn, screen.root, win, &properties)?;
+				}
+				if cli.no_decoration {
+					remove_decoration(&conn, win)?;
+				}
+				if let Some(win_type) = &cli.win_type {
+					set_type(&conn, win, win_type)?;
+				}
+				if let Some(geometry) = &cli.geometry {
+					set_geometry(&conn, screen, win, geometry)?;
+				}
+				break;
 			}
 		}
 		let now = SystemTime::now();
@@ -158,26 +188,81 @@ fn start(cli: Cli) -> Result<()>
 	Ok(())
 }
 
-fn get_pid(conn: &RustConnection, current: Window, properties: &PropertyAtoms)
-	-> Result<Option<u32>>
+fn match_window(conn: &RustConnection, current: Window, target_pid: u32,
+	match_property: &Option<WindowMatchProperty>, properties: &PropertyAtoms)
+	-> Result<bool>
 {
-	let pid_result = conn.get_property(
-		false,
-		current,
-		properties.pid,
-		AtomEnum::CARDINAL,
-		0, 1,
-	)?;
-	let pid_reply = pid_result.reply()?;
-	if pid_reply.length == 1 {
-		let pid = pid_reply.value32()
-			.expect("Invalid replay")
-			.next()
-			.expect("No pid exists in result");
-		Ok(Some(pid))
-	} else {
-		Ok(None)
+	match match_property {
+		None => {
+			let pid_result = conn.get_property(
+				false,
+				current,
+				properties.pid,
+				AtomEnum::CARDINAL,
+				0, 1,
+			)?;
+			let pid_reply = pid_result.reply()?;
+			if pid_reply.length == 1 {
+				let pid = pid_reply.value32()
+					.expect("Invalid replay")
+					.next()
+					.expect("No pid exists in result");
+				Ok(pid == target_pid)
+			} else {
+				Ok(false)
+			}
+		}
+		Some(WindowMatchProperty::Class(value)) => {
+			let len = value.len();
+			let result = conn.get_property(
+				false,
+				current,
+				AtomEnum::WM_CLASS,
+				AtomEnum::STRING,
+				0,
+				len as u32)?;
+			let reply = result.reply()?;
+			let win_value = reply.value;
+			// class with two null-separated strings
+			let bytes = value.as_bytes();
+			for buf in win_value.split(|b| *b == 0) {
+				if buf.len() == len {
+					if compare_bytes(buf, bytes, len) {
+						return Ok(true);
+					}
+				}
+			}
+			Ok(false)
+		}
+		Some(WindowMatchProperty::Name(value)) => {
+			let len = value.len();
+			let result = conn.get_property(
+				false,
+				current,
+				AtomEnum::WM_NAME,
+				AtomEnum::STRING,
+				0,
+				len as u32)?;
+			let reply = result.reply()?;
+			let win_value = reply.value;
+			if win_value.len() == len {
+				Ok(compare_bytes(&win_value, value.as_bytes(), len))
+			} else {
+				Ok(false)
+			}
+		}
 	}
+}
+
+#[inline]
+fn compare_bytes(a: &[u8], b: &[u8], len: usize) -> bool
+{
+	for i in 0..len {
+		if a[i] != b[i] {
+			return false;
+		}
+	}
+	true
 }
 
 #[inline]
@@ -392,11 +477,11 @@ fn set_geometry(conn: &RustConnection, screen: &Screen, win: Window, geometry: &
 			let height = if let Some(size) = geometry.size {
 				size.1 as i32
 			} else if let Some((_, oh)) = orig_win_size {
-   					oh as i32
-   				} else {
-   					conn.get_geometry(win)?
-   						.reply()?.height as i32
-   				};
+				oh as i32
+			} else {
+				conn.get_geometry(win)?
+					.reply()?.height as i32
+			};
 			y = screen.height_in_pixels as i32 - y - height;
 		}
 		aux = aux.x(x).y(y);
